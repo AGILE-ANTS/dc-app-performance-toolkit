@@ -16,13 +16,8 @@ settings:
     test_duration: 45m
     ramp-up: 5m                     # time to spin all concurrent users
     total_actions_per_hour: 20000
-<<<<<<< HEAD
-    WEBDRIVER_VISIBLE: false
-    JMETER_VERSION: 5.2.1
-=======
     WEBDRIVER_VISIBLE: False
     JMETER_VERSION: 5.4.2
->>>>>>> master
     LANGUAGE: en_US.utf8
     allow_analytics: Yes            # Allow sending basic run analytics to Atlassian. These analytics help us to understand how the tool is being used and help us to continue to invest in this tooling. For more details please see our README.
     # Action percentage for JMeter and Locust load executors
