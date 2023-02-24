@@ -1,13 +1,13 @@
 import random
-import string
 
-import urllib3
-
-from util.conf import CONFLUENCE_SETTINGS
+from multiprocessing.pool import ThreadPool
+from prepare_data_common import __generate_random_string, __write_to_file, __warnings_filter
 from util.api.confluence_clients import ConfluenceRpcClient, ConfluenceRestClient
+from util.common_util import print_timing
+from util.conf import CONFLUENCE_SETTINGS
 from util.project_paths import CONFLUENCE_USERS, CONFLUENCE_PAGES, CONFLUENCE_BLOGS, CONFLUENCE_CUSTOM_PAGES
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+__warnings_filter()
 
 USERS = "users"
 PAGES = "pages"
@@ -16,22 +16,43 @@ BLOGS = "blogs"
 DEFAULT_USER_PREFIX = 'performance_'
 DEFAULT_USER_PASSWORD = 'password'
 ERROR_LIMIT = 10
+DATASET_PAGES_TEMPLATES = {'big_attachments_1': ['PAGE_1', 'PAGE_2'],
+                           'small_attachments_3': ['PAGE_3', 'PAGE_4', 'PAGE_5', 'PAGE_6'],
+                           'small_text_7': ['PAGE_7', 'PAGE_8', 'PAGE_9', 'PAGE_10', 'PAGE_11',
+                                            'PAGE_12', 'PAGE_13', 'PAGE_14', 'PAGE_15'],
+                           'medium_text_16': ['PAGE_16', 'PAGE_17', 'PAGE_18', 'PAGE_19', 'PAGE_20',
+                                              'PAGE_23', 'PAGE_24'],
+                           'text_formatting_21': ['PAGE_21', 'PAGE_22', 'PAGE_25', 'PAGE_26', 'PAGE_27', 'PAGE_28',
+                                                  'PAGE_29', 'PAGE_30']
+                           }
+DATASET_BLOGS_TEMPLATES = {1: ['BLOG_1'],  #, 'BLOG_2'], # TODO Investigate how to group similar blogs
+                           3: ['BLOG_3'],  #'BLOG_4', 'BLOG_5'],
+                           6: ['BLOG_6']  # 'BLOG_7', 'BLOG_8', 'BLOG_9', 'BLOG_10']
+
+                           }
+DEFAULT_TEMPLATE_ID = 1
 
 ENGLISH_US = 'en_US'
 ENGLISH_GB = 'en_GB'
 
 
-def generate_random_string(length=20):
-    return "".join([random.choice(string.ascii_lowercase) for _ in range(length)])
-
-
+@print_timing('Creating dataset started')
 def __create_data_set(rest_client, rpc_client):
     dataset = dict()
     dataset[USERS] = __get_users(rest_client, rpc_client, CONFLUENCE_SETTINGS.concurrency)
     perf_user = random.choice(dataset[USERS])['user']
     perf_user_api = ConfluenceRestClient(CONFLUENCE_SETTINGS.server_url, perf_user['username'], DEFAULT_USER_PASSWORD)
-    dataset[PAGES] = __get_pages(perf_user_api, 5000)
-    dataset[BLOGS] = __get_blogs(perf_user_api, 5000)
+
+    pool = ThreadPool(processes=2)
+    async_pages = pool.apply_async(__get_pages, (perf_user_api, 5000))
+    async_blogs = pool.apply_async(__get_blogs, (perf_user_api, 5000))
+
+    async_pages.wait()
+    async_blogs.wait()
+
+    dataset[PAGES] = async_pages.get()
+    dataset[BLOGS] = async_blogs.get()
+
     dataset[CUSTOM_PAGES] = __get_custom_pages(perf_user_api, 5000, CONFLUENCE_SETTINGS.custom_dataset_query)
     print(f'Users count: {len(dataset[USERS])}')
     print(f'Pages count: {len(dataset[PAGES])}')
@@ -41,6 +62,7 @@ def __create_data_set(rest_client, rpc_client):
     return dataset
 
 
+@print_timing('Getting users')
 def __get_users(confluence_api, rpc_api, count):
     errors_count = 0
     cur_perf_users = confluence_api.get_users(DEFAULT_USER_PREFIX, count)
@@ -51,7 +73,7 @@ def __get_users(confluence_api, rpc_api, count):
         if errors_count >= ERROR_LIMIT:
             raise Exception(f'Maximum error limit reached {errors_count}/{ERROR_LIMIT}. '
                             f'Please check the errors in bzt.log')
-        username = f"{DEFAULT_USER_PREFIX}{generate_random_string(10)}"
+        username = f"{DEFAULT_USER_PREFIX}{__generate_random_string(10)}"
         try:
             user = rpc_api.create_user(username=username, password=DEFAULT_USER_PASSWORD)
             print(f"User {user['user']['username']} is created, number of users to create is "
@@ -65,20 +87,45 @@ def __get_users(confluence_api, rpc_api, count):
     return cur_perf_users
 
 
+@print_timing('Getting pages')
 def __get_pages(confluence_api, count):
-    pages = confluence_api.get_content_search(
-        0, count, cql='type=page'
-                      ' and title !~ JMeter'  # filter out pages created by JMeter
-                      ' and title !~ Selenium'  # filter out pages created by Selenium
-                      ' and title !~ locust'  # filter out pages created by locust
-                      ' and title !~ Home')  # filter out space Home pages
-    if not pages:
+    pages_templates = [i for sublist in DATASET_PAGES_TEMPLATES.values() for i in sublist]
+    pages_templates_count = len(pages_templates)
+    pages_per_template = int(count / pages_templates_count) if count > pages_templates_count else 1
+    dcapt_dataset = bool(confluence_api.search(limit=100, cql='type=page and text ~ PAGE_1'))
+    total_pages = []
+
+    if dcapt_dataset:
+        for template_id, pages_marks in DATASET_PAGES_TEMPLATES.items():
+            for mark in pages_marks:
+                pages = confluence_api.get_content_search(
+                    0, pages_per_template, cql='type=page'
+                                               ' and title !~ JMeter'  # filter out pages created by JMeter
+                                               ' and title !~ Selenium'  # filter out pages created by Selenium
+                                               ' and title !~ locust'  # filter out pages created by locust
+                                               ' and title !~ Home'  # filter out space Home pages
+                                               f' and text ~ {mark}')
+                for page in pages:
+                    page['template_id'] = template_id
+                total_pages.extend(pages)
+
+    else:
+        total_pages = confluence_api.get_content_search(
+            0, count, cql='type=page'
+                          ' and title !~ JMeter'  # filter out pages created by JMeter
+                          ' and title !~ Selenium'  # filter out pages created by Selenium
+                          ' and title !~ locust'  # filter out pages created by locust
+                          ' and title !~ Home')  # filter out space Home pages
+        for page in total_pages:
+            page['template_id'] = DEFAULT_TEMPLATE_ID
+    if not total_pages:
         raise SystemExit(f"There are no Pages in Confluence accessible by a random performance user: "
                          f"{confluence_api.user}")
 
-    return pages
+    return total_pages
 
 
+@print_timing('Getting custom pages')
 def __get_custom_pages(confluence_api, count, cql):
     pages = []
     if cql:
@@ -89,32 +136,48 @@ def __get_custom_pages(confluence_api, count, cql):
     return pages
 
 
+@print_timing('Getting blogs')
 def __get_blogs(confluence_api, count):
-    blogs = confluence_api.get_content_search(
-        0, count, cql='type=blogpost'
-                      ' and title !~ Performance')
-    if not blogs:
+    blogs_templates = [i for sublist in DATASET_BLOGS_TEMPLATES.values() for i in sublist]
+    blogs_templates_count = len(blogs_templates)
+    blogs_per_template = int(count / blogs_templates_count) if count > blogs_templates_count else 1
+    dcapt_dataset = bool(confluence_api.search(limit=100, cql='type=page and text ~ PAGE_1'))
+    total_blogs = []
+
+    if dcapt_dataset:
+        for template_id, blogs_marks in DATASET_BLOGS_TEMPLATES.items():
+            for mark in blogs_marks:
+                blogs = confluence_api.get_content_search(
+                    0, blogs_per_template, cql='type=blogpost'
+                                               ' and title !~ Performance'
+                                               f' and text ~ {mark}')
+                for blog in blogs:
+                    blog['template_id'] = template_id
+                total_blogs.extend(blogs)
+    else:
+        total_blogs = confluence_api.get_content_search(
+            0, count, cql='type=blogpost'
+                          ' and title !~ Performance')
+        for blog in total_blogs:
+            blog['template_id'] = DEFAULT_TEMPLATE_ID
+
+    if not total_blogs:
         raise SystemExit(f"There are no Blog posts in Confluence accessible by a random performance user: "
                          f"{confluence_api.user}")
 
-    return blogs
+    return total_blogs
 
 
 def __is_remote_api_enabled(confluence_api):
     return confluence_api.is_remote_api_enabled()
 
 
-def __write_to_file(file_path, items):
-    with open(file_path, 'w') as f:
-        for item in items:
-            f.write(f"{item}\n")
-
-
+@print_timing('Started writing data to files')
 def write_test_data_to_files(dataset):
-    pages = [f"{page['id']},{page['space']['key']}" for page in dataset[PAGES]]
+    pages = [f"{page['id']},{page['space']['key']},{page['template_id']}" for page in dataset[PAGES]]
     __write_to_file(CONFLUENCE_PAGES, pages)
 
-    blogs = [f"{blog['id']},{blog['space']['key']}" for blog in dataset[BLOGS]]
+    blogs = [f"{blog['id']},{blog['space']['key']},{blog['template_id']}" for blog in dataset[BLOGS]]
     __write_to_file(CONFLUENCE_BLOGS, blogs)
 
     users = [f"{user['user']['username']},{DEFAULT_USER_PASSWORD}" for user in dataset[USERS]]
@@ -144,6 +207,7 @@ def __check_for_admin_permissions(confluence_api):
         raise SystemExit(f"The '{confluence_api.user}' user does not have admin permissions.")
 
 
+@print_timing('Confluence data preparation')
 def main():
     print("Started preparing data")
 
@@ -153,7 +217,6 @@ def main():
     rest_client = ConfluenceRestClient(url, CONFLUENCE_SETTINGS.admin_login, CONFLUENCE_SETTINGS.admin_password,
                                        verify=CONFLUENCE_SETTINGS.secure)
     rpc_client = ConfluenceRpcClient(url, CONFLUENCE_SETTINGS.admin_login, CONFLUENCE_SETTINGS.admin_password)
-
     __is_remote_api_enabled(rest_client)
     __check_for_admin_permissions(rest_client)
     __is_collaborative_editing_enabled(rest_client)
