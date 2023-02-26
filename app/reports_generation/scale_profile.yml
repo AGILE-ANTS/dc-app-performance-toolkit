@@ -4,13 +4,13 @@ runs:
   # fullPath should contain a full path to the directory with run results. E.g. /home/$USER/dc-app-performance-toolkit/app/results/jira/2019-08-06_18-41-08
   - runName: "1 Node"
     runType: "baseline"
-    fullPath: ""
+    fullPath: "/home/ubuntu/dc-app-performance-toolkit/app/results/confluence/2023-02-26_18-18-20"
   - runName: "2 Nodes"
     runType: "experiment"
-    fullPath: ""
+    fullPath: "/home/ubuntu/dc-app-performance-toolkit/app/results/confluence/2023-02-26_19-26-20"
   - runName: "4 Nodes"
     runType: "experiment"
-    fullPath: ""
+    fullPath: "/home/ubuntu/dc-app-performance-toolkit/app/results/confluence/2023-02-26_20-43-44"
 
 # Chart generation configs
 index_col: "Action"
@@ -18,3 +18,4 @@ title: "DCAPT Scale Testing"
 image_height_px: 1000
 image_width_px: 1600
 judge: false
+
